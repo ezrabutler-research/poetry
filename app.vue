@@ -27,7 +27,7 @@ const showTools = ref(false)
 const isAnalyzed = computed(() => lines.value.length > 0)
 
 function rhymeKey(text: string) {
-  const word = text.trim().toLocaleLowerCase().match(/[\p{L}’'-]+(?=[.,;:!?…\])}»”'"\s]*$)/u)?.[0]?.replace(/[’'-]/g, '') ?? ''
+  const word = text.trim().toLocaleLowerCase().match(/[\p{L}’'-]+/u)?.[0]?.replace(/[’'-]/g, '') ?? ''
   if (!word) return ''
   return word.normalize('NFD').replace(/[\u0300-\u036f]/g, '').slice(-3)
 }
@@ -85,12 +85,16 @@ function makeLine(text: string, stanzaBreak = false): Line {
 }
 function analyze() {
   let stanzaBreak = false
-  lines.value = poemInput.value.split(/\r?\n/).flatMap((raw) => {
-    if (!raw.trim()) { stanzaBreak = lines.value.length > 0 || stanzaBreak; return [] }
-    const line = makeLine(raw.trim(), stanzaBreak)
+  const result: Line[] = []
+  for (const raw of poemInput.value.split(/\r?\n/)) {
+    if (!raw.trim()) {
+      if (result.length) stanzaBreak = true
+      continue
+    }
+    result.push(makeLine(raw.trim(), stanzaBreak))
     stanzaBreak = false
-    return [line]
-  })
+  }
+  lines.value = result
 }
 function updateSyllables(line: Line, value: string | number) {
   line.syllables = Math.max(0, Math.min(40, Number(value) || 0))
@@ -99,6 +103,10 @@ function updateSyllables(line: Line, value: string | number) {
 function cycleMark(line: Line, index: number) {
   const cycle = ['·', '˘', '′']
   line.marks[index] = cycle[(cycle.indexOf(line.marks[index] ?? '·') + 1) % cycle.length]
+}
+function markLabel(mark: string, index: number) {
+  const stress = mark === '·' ? 'Unset' : mark === '˘' ? 'Unstressed' : 'Stressed'
+  return `${stress} syllable ${index + 1}`
 }
 function addMissingLine(index = lines.value.length - 1) {
   lines.value.splice(index + 1, 0, { id: nextId.value++, text: '', gap: true, syllables: 0, marks: [], foot: 'Unspecified', stanzaBreak: false })
@@ -120,7 +128,7 @@ function escapeHtml(text: string) {
   return text.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!))
 }
 function endingParts(text: string) {
-  const match = text.match(/^(.*?)([\p{L}’'-]+)([.,;:!?…\])}»”'"\s]*)$/u)
+  const match = text.match(/^(.*?)([\p{L}’'-]+)([^\p{L}’'-]*)$/u)
   return match ? { before: match[1], word: match[2], after: match[3] } : { before: text, word: '', after: '' }
 }
 function exportHtml() {
@@ -132,7 +140,8 @@ function exportHtml() {
       ? `${escapeHtml(parts.before)}<em style="background:${color}">${escapeHtml(parts.word)}</em>${escapeHtml(parts.after)}`
       : escapeHtml(line.text)
     const marks = line.marks.map((mark) => mark === '·' ? '○' : mark).join(' ')
-    return `<p class="line">${ending} <span class="count">(${line.syllables})</span>${showTools ? `<span class="detail">${escapeHtml(line.foot)} · ${escapeHtml(marks)}</span>` : ''}</p>`
+    const detail = showTools.value ? `<span class="detail">${escapeHtml(line.foot)} · ${escapeHtml(marks)}</span>` : ''
+    return `<p class="line">${ending} <span class="count">(${line.syllables})</span>${detail}</p>`
   }).join('\n')
   const title = escapeHtml(poemTitle.value || 'Untitled poem')
   const html = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${title}</title><style>body{font:20px/1.9 Georgia,serif;max-width:760px;margin:48px auto;padding:0 24px;color:#24231f}.line{margin:0}.line em{font-style:italic;border-radius:3px;padding:1px 3px}.count,.detail{font:14px ui-sans-serif,system-ui;color:#777}.detail{display:block}.missing{color:#986b32;font-style:italic;margin:12px 0}</style><h1>${title}</h1>${body}</html>`
@@ -188,7 +197,7 @@ function exportPdf() { window.print() }
                 <p class="poem-line"><span>{{ endingParts(line.text).before }}</span><em v-if="endingParts(line.text).word" class="rhyme-end" :style="{ backgroundColor: rhymeColor(index) }">{{ endingParts(line.text).word }}</em><span>{{ endingParts(line.text).after }}</span> <span class="syllable-count">({{ line.syllables }})</span></p>
                 <div v-if="showTools" class="ml-1 mt-2 border-l-2 border-stone-100 pl-3">
                   <div class="flex flex-wrap items-center gap-3 text-sm text-stone-600"><label class="flex items-center gap-2">Syllables<input :value="line.syllables" type="number" min="0" max="40" class="w-16 rounded border border-stone-200 px-2 py-1 text-center text-stone-900" @input="updateSyllables(line, ($event.target as HTMLInputElement).value)"></label><label class="flex items-center gap-2">Foot<select v-model="line.foot" class="rounded border border-stone-200 bg-white px-2 py-1 text-stone-900"><option v-for="foot in feet" :key="foot">{{ foot }}</option></select></label><button class="text-stone-500 hover:text-red-700" @click="removeLine(index)">Remove line</button><button class="text-stone-500 hover:text-[#315d45]" @click="addMissingLine(index)">Insert missing line after</button></div>
-                  <div class="mt-2 flex flex-wrap gap-1" :aria-label="'Scansion marks'"><button v-for="(mark, mi) in line.marks" :key="mi" class="grid h-7 w-7 place-items-center rounded border border-stone-200 text-base hover:border-[#52715d]" :class="mark === '′' ? 'bg-[#e9eee8] text-[#274f3b]' : 'text-stone-500'" :aria-label="`${mark === '·' ? 'Unset' : mark === '˘' ? 'Unstressed' : 'Stressed'} syllable" @click="cycleMark(line, mi)">{{ mark === '·' ? '○' : mark }}</button><span class="ml-1 self-center text-xs text-stone-400">Click: unset → unstressed → stressed</span></div>
+                  <div class="mt-2 flex flex-wrap gap-1" aria-label="Scansion marks"><button v-for="(mark, mi) in line.marks" :key="mi" class="grid h-7 w-7 place-items-center rounded border border-stone-200 text-base hover:border-[#52715d]" :class="mark === '′' ? 'bg-[#e9eee8] text-[#274f3b]' : 'text-stone-500'" :aria-label="markLabel(mark, mi)" @click="cycleMark(line, mi)">{{ mark === '·' ? '○' : mark }}</button><span class="ml-1 self-center text-xs text-stone-400">Click: unset → unstressed → stressed</span></div>
                   <label class="mt-2 block text-sm text-stone-600">Edit line<input v-model="line.text" class="ml-2 w-full max-w-xl rounded border border-stone-200 px-2 py-1 font-serif text-base text-stone-900 sm:w-auto"></label>
                 </div>
               </template>
