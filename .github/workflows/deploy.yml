@@ -20,20 +20,16 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-
       - name: Install dependencies
         run: npm install
-
       - name: Generate static site
         run: npm run generate
         env:
           NUXT_APP_BASE_URL: /poetry/
-
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
