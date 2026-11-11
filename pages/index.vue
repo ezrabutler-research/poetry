@@ -27,13 +27,22 @@ const lines = ref<PoemLine[]>([])
 const savedTexts = ref<SavedText[]>([])
 const feedback = ref<RhymeFeedback[]>([])
 const status = ref('')
+const activePairIndex = ref<number | null>(null)
 
 const analyzed = computed(() => lines.value.length > 0)
-
 const rhymeGroups = computed(() => buildRhymeGroups(lines.value))
 const pairDictionary = computed(() => buildPairDictionary(lines.value, feedback.value))
 const vowelCorrespondences = computed(() => buildVowelCorrespondences(lines.value, feedback.value))
 const candidates = computed(() => buildCandidates(lines.value, feedback.value))
+
+const rhymePalette = computed(() => {
+  const colors = ['#dfeadf', '#dfe7f7', '#f2dcc9', '#f4e2b8', '#dfe7d9', '#e7d9f0', '#dfe7ef']
+  const mapping = new Map<string, string>()
+  rhymeGroups.value.forEach(([tail], index) => {
+    mapping.set(tail, colors[index % colors.length])
+  })
+  return mapping
+})
 
 function analyze() {
   if (!input.value.trim()) {
@@ -42,11 +51,13 @@ function analyze() {
   }
 
   lines.value = analyzeText(input.value, language.value)
+  activePairIndex.value = null
   status.value = ''
 }
 
 function newPoem() {
   lines.value = []
+  activePairIndex.value = null
   status.value = ''
 }
 
@@ -78,7 +89,7 @@ function saveText() {
     updatedAt: Date.now(),
   }
 
-  savedTexts.value = [item, ...savedTexts.value.filter((saved) => saved.id !== item.id)]
+  savedTexts.value = [item, ...savedTexts.value.filter((entry) => entry.id !== item.id)]
   localStorage.setItem('verse-saved-texts', JSON.stringify(savedTexts.value))
   status.value = 'Saved in this browser.'
 }
@@ -100,7 +111,8 @@ function deleteText(id: string) {
 }
 
 function onFileChange(event: Event) {
-  const file = (event.target as HTMLInputElement).files?.[0]
+  const inputElement = event.target as HTMLInputElement
+  const file = inputElement.files?.[0]
   if (!file) return
 
   const reader = new FileReader()
@@ -110,23 +122,19 @@ function onFileChange(event: Event) {
     status.value = 'Text file loaded.'
   }
   reader.readAsText(file)
-  ;(event.target as HTMLInputElement).value = ''
+  inputElement.value = ''
 }
 
-function updateSyllable({ line, part, value }: { line: PoemLine; part: { syllables?: number }; value: string }) {
+function updateSyllable({ lineId, partIndex, value }: { lineId: number; partIndex: number; value: string }) {
+  const line = lines.value.find((entry) => entry.id === lineId)
+  if (!line) return
+
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return
-  part.syllables = Math.max(0, Math.min(20, parsed))
-}
 
-function addMissingLine() {
-  lines.value.splice(lines.value.length, 0, {
-    id: Math.round(Date.now() + Math.random() * 10000),
-    stanza: lines.value.length ? lines.value[lines.value.length - 1].stanza : 0,
-    parts: [],
-    gap: true,
-    stanzaBreak: false,
-  })
+  const target = line.parts[partIndex]
+  if (!target) return
+  target.syllables = Math.max(0, Math.min(20, parsed))
 }
 
 function saveJudgmentFor(index: number, otherIndex: number, rhymes: boolean) {
@@ -134,6 +142,16 @@ function saveJudgmentFor(index: number, otherIndex: number, rhymes: boolean) {
   const b = finalWord(lines.value[otherIndex])
   if (!a || !b) return
   feedback.value = saveJudgment(feedback.value, a, b, rhymes)
+}
+
+function addMissingLine() {
+  lines.value.push({
+    id: Date.now() + Math.random(),
+    stanza: lines.value.length ? lines.value[lines.value.length - 1].stanza : 0,
+    parts: [{ text: '[missing line]' }],
+    gap: true,
+    stanzaBreak: false,
+  })
 }
 
 function exportFeedback() {
@@ -147,33 +165,33 @@ function exportFeedback() {
 }
 
 function importFeedback(event: Event) {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
+  const inputElement = event.target as HTMLInputElement
+  const file = inputElement.files?.[0]
   if (!file) return
 
   const reader = new FileReader()
   reader.onload = () => {
     try {
-      const data = JSON.parse(String(reader.result)) as RhymeFeedback[]
-      if (!Array.isArray(data)) throw new Error('invalid json')
-      feedback.value = data.filter((entry) => typeof entry.a === 'string' && typeof entry.b === 'string' && typeof entry.rhymes === 'boolean')
+      const parsed = JSON.parse(String(reader.result)) as RhymeFeedback[]
+      if (!Array.isArray(parsed)) throw new Error('invalid')
+      feedback.value = parsed.filter((entry) => typeof entry.a === 'string' && typeof entry.b === 'string' && typeof entry.rhymes === 'boolean')
     } catch {
       window.alert('Please select a valid rhyme-feedback JSON file.')
     }
   }
   reader.readAsText(file)
-  input.value = ''
+  inputElement.value = ''
 }
 
 function exportHtml() {
   const titleText = escapeHtml(title.value || 'Untitled poem')
-  const body = lines.value.map((line, index) => {
+  const body = lines.value.map((line) => {
     if (line.gap) return '<p class="line missing">[Missing line]</p>'
     const word = finalWord(line)
-    return `<p class="line">${escapeHtml(lineText(line))} <mark style="background:${line.parts.some(part => part.syllables !== undefined) ? '#dff1e5' : 'transparent'}">${escapeHtml(word)}</mark> <span class="count">(${lineTotal(line)})</span></p>`
+    return `<p class="line">${escapeHtml(lineText(line))} <mark>${escapeHtml(word)}</mark> <span class="count">(${lineTotal(line)})</span></p>`
   }).join('\n')
 
-  const html = `<!doctype html><html lang="en"><meta charset="utf-8"><title>${titleText}</title><style>body{font:20px/1.65 Georgia,serif;max-width:760px;margin:48px auto;padding:0 24px}.line{margin:0 0 .18rem}.count{font:14px system-ui;color:#777}mark{color:inherit;border-radius:4px;padding:0 3px}</style><h1>${titleText}</h1>${body}</html>`
+  const html = `<!doctype html><html lang="en"><meta charset="utf-8"><title>${titleText}</title><style>body{font:20px/1.65 Georgia,serif;max-width:760px;margin:48px auto;padding:0 24px}.line{margin:0 0 0.5rem}.count{font-size:.8em;opacity:.75}.missing{color:#8a5b1f;background:#f6e7c9;padding:.3rem .5rem;border-radius:.3rem}mark{background:#dfeadf;padding:0 .15em;border-radius:.15em}</style><body>${body}</body></html>`
   const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
@@ -186,6 +204,8 @@ function exportHtml() {
 function exportPdf() {
   window.print()
 }
+
+const lineHasPairing = (lineIndex: number) => !!(candidates.value[lineIndex]?.length)
 
 onMounted(() => {
   try {
@@ -212,12 +232,12 @@ watch(feedback, (value) => {
   <div class="min-h-screen bg-[#f7f7f4] text-stone-900">
     <header class="border-b border-stone-200 bg-white">
       <div class="mx-auto flex max-w-5xl items-center justify-between px-5 py-4 sm:px-8">
-        <NuxtLink to="/" class="flex items-center gap-3 no-underline">
+        <div class="flex items-center gap-3">
           <span class="grid h-9 w-9 place-items-center rounded-lg bg-[#274f3b] text-lg text-white">¶</span>
           <span class="font-semibold">Verse</span>
-        </NuxtLink>
+        </div>
         <nav class="flex items-center gap-4 text-sm">
-          <NuxtLink to="/rhyme-dictionaries" class="font-medium text-[#315d45] underline">Rhyme dictionaries</NuxtLink>
+          <button class="font-medium text-[#315d45] underline" @click="newPoem">New poem</button>
           <span class="text-stone-500">Poetry analysis</span>
         </nav>
       </div>
@@ -227,7 +247,7 @@ watch(feedback, (value) => {
       <section v-if="!analyzed" class="mx-auto max-w-3xl">
         <p class="mb-2 text-xs font-semibold uppercase tracking-[.18em] text-[#52715d]">Read closely</p>
         <h1 class="text-3xl font-semibold tracking-tight sm:text-4xl">See the shape of a poem.</h1>
-        <p class="mt-3 text-stone-600">Read, compare likely rhymes, and edit syllables only when you need to.</p>
+        <p class="mt-3 text-stone-600">Paste or upload a poem to see line totals and ending-word rhyme colors.</p>
 
         <div class="mt-7 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm sm:p-7">
           <div class="grid gap-4 sm:grid-cols-2">
@@ -261,8 +281,7 @@ watch(feedback, (value) => {
           </div>
 
           <label for="poem-text" class="mb-2 block text-sm font-medium">Poem text</label>
-          <textarea id="poem-text" v-model="input" rows="12" class="w-full resize-y rounded-lg border border-stone-200 px-3 py-3 font-serif leading-7" placeholder="One verse line per row; blank lines mark stanzas."></textarea>
-          <p class="mt-2 text-xs leading-5 text-amber-800">A line ending in … or three or more periods (... / ....) is marked incomplete and excluded from rhyme analysis.</p>
+          <textarea id="poem-text" v-model="input" rows="12" class="w-full resize-y rounded-lg border border-stone-200 px-3 py-3 font-serif text-lg leading-8" placeholder="One verse line per row; blank lines separate stanzas."></textarea>
 
           <div class="mt-5 flex flex-wrap items-end justify-between gap-4">
             <button class="rounded-lg border border-stone-300 bg-white px-4 py-3 text-sm font-semibold" @click="saveText">Save text</button>
@@ -286,52 +305,60 @@ watch(feedback, (value) => {
         </section>
       </section>
 
-      <section v-else>
-        <div class="mb-5 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <button class="mb-1 text-sm font-medium text-[#315d45] hover:underline" @click="newPoem">← New poem</button>
-            <h1 class="text-2xl font-semibold">{{ title || 'Untitled poem' }}</h1>
-            <p class="mt-1 text-xs text-stone-500">
-              {{ languageOptions.find((item) => item.value === language)?.label }} · {{ period || 'period unspecified' }} {{ year }}
-              <a v-if="sourceUrl" :href="sourceUrl" target="_blank" rel="noopener" class="underline">Source</a>
-            </p>
+      <section v-else class="space-y-5">
+        <div class="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm sm:p-6">
+          <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <button class="mb-1 text-sm font-medium text-[#315d45] hover:underline" @click="newPoem">← New poem</button>
+              <h1 class="text-2xl font-semibold">{{ title || 'Untitled poem' }}</h1>
+              <p class="mt-1 text-xs text-stone-500">
+                {{ languageOptions.find((item) => item.value === language)?.label }} · {{ period || 'period unspecified' }} {{ year }}
+                <a v-if="sourceUrl" :href="sourceUrl" target="_blank" rel="noopener" class="underline">Source</a>
+              </p>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <button class="rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm" @click="saveText">Save text</button>
+              <button class="rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm" @click="exportHtml">Download HTML</button>
+              <button class="rounded-lg bg-[#274f3b] px-3 py-2 text-sm font-semibold text-white" @click="exportPdf">Save PDF</button>
+            </div>
           </div>
-          <div class="flex flex-wrap gap-2">
-            <button class="rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm" @click="saveText">Save text</button>
-            <button class="rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm" @click="exportHtml">Download HTML</button>
-            <button class="rounded-lg bg-[#274f3b] px-3 py-2 text-sm font-semibold text-white" @click="exportPdf">Save PDF</button>
+
+          <div class="rounded-xl border border-stone-200 bg-stone-50 p-4">
+            <p class="text-base font-medium text-stone-800">Poem</p>
+            <p class="mt-1 text-sm text-stone-600">Line syllable totals remain visible. Blank lines define stanzas. End-words are colour-coded by rhyme tail.</p>
           </div>
         </div>
 
         <div class="rounded-2xl border border-stone-200 bg-white shadow-sm">
-          <div class="border-b border-stone-200 px-5 py-4 sm:px-8">
-            <h2 class="font-semibold">Poem</h2>
-            <p class="mt-1 text-sm text-stone-500">Line syllable totals remain visible. Click a word to adjust its own count. Blank lines define stanzas.</p>
-          </div>
-
           <div class="px-5 py-4 sm:px-8 sm:py-5">
-            <div v-for="(line, index) in lines" :key="line.id" class="poem-row">
+            <div v-for="(line, index) in lines" :key="line.id" class="mb-3 last:mb-0">
               <p v-if="line.gap" class="my-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">Missing line — position preserved</p>
               <template v-else>
-                <p class="poem-line">
+                <p class="flex flex-wrap items-center gap-1 font-serif text-[2rem] leading-[1.6] tracking-[-0.02em] text-stone-900">
                   <template v-for="(part, partIndex) in line.parts" :key="partIndex">
-                    <button v-if="part.syllables !== undefined" class="word-button" :class="partIndex === line.parts.length - 1 ? 'end-word' : ''" :style="partIndex === line.parts.length - 1 ? { backgroundColor: '#dff1e5' } : {}" :title="`Click to edit syllables for ${part.text}`" @click="updateSyllable({ line, part, value: String(part.syllables ?? 0) })">
+                    <span v-if="part.syllables !== undefined" class="inline-block rounded-md border border-stone-200 bg-stone-50 px-1 py-0.5 text-[0.8em] text-stone-700">
                       {{ part.text }}
-                    </button>
+                    </span>
                     <span v-else>{{ part.text }}</span>
                   </template>
-                  <span class="line-total">({{ lineTotal(line) }})</span>
-                  <button class="rhyme-link" @click="lines[index] && (status = 'Pairing panel opened; use the matched options below.')">Pairings</button>
+                  <span class="ml-2 text-base font-sans text-stone-500">({{ lineTotal(line) }})</span>
+                  <button
+                    v-if="lineHasPairing(index)"
+                    type="button"
+                    class="ml-2 rounded border border-stone-300 bg-white px-2 py-0.5 text-xs font-medium text-stone-700"
+                    @click="activePairIndex = activePairIndex === index ? null : index"
+                  >
+                    Pairings
+                  </button>
                 </p>
 
-                <div class="inline-panel rhyme-panel">
+                <div v-if="activePairIndex === index" class="mt-2 rounded-xl border border-stone-200 bg-stone-50 p-3">
                   <div class="mb-2 flex items-center justify-between">
                     <p class="text-sm font-semibold">All pairings for {{ finalWord(line) }}</p>
-                    <button class="text-xs text-stone-500 underline" @click="status = ''">Close</button>
+                    <button class="text-xs text-stone-500 underline" @click="activePairIndex = null">Close</button>
                   </div>
-                  <p class="mb-3 text-xs leading-5 text-stone-500">A spelling estimate is shown for each candidate. Use the controls below to mark a pair as rhyme or not.</p>
                   <div v-if="candidates[index]?.length" class="space-y-2">
-                    <div v-for="candidate in candidates[index]" :key="candidate.index" class="rounded-lg border border-stone-200 p-3">
+                    <div v-for="candidate in candidates[index]" :key="candidate.index" class="rounded-lg border border-stone-200 bg-white p-3">
                       <div class="flex flex-wrap items-start justify-between gap-3">
                         <div>
                           <p class="font-serif text-lg">
@@ -357,7 +384,19 @@ watch(feedback, (value) => {
           </div>
         </div>
 
-        <section class="mt-5 rounded-2xl border border-stone-200 bg-white p-5">
+        <div class="rounded-2xl border border-stone-200 bg-white p-5">
+          <p class="text-lg font-semibold text-stone-800">
+            Rhyme colours
+            <span class="ml-2 text-sm font-normal text-stone-500">{{ rhymeGroups.length }} groups</span>
+          </p>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <span v-for="[group, words] in rhymeGroups" :key="group" class="rounded-full border border-stone-200 px-2.5 py-1 text-xs font-medium text-stone-700" :style="{ backgroundColor: rhymePalette.get(group) || '#e5e7eb' }">
+              {{ group }} · {{ words.length }}
+            </span>
+          </div>
+        </div>
+
+        <div class="rounded-2xl border border-stone-200 bg-white p-5">
           <div class="flex flex-wrap items-end justify-between gap-3">
             <div>
               <h2 class="text-lg font-semibold">Rhyme-pair collection for this text</h2>
@@ -389,9 +428,9 @@ watch(feedback, (value) => {
             </table>
           </div>
           <p v-else class="mt-3 text-sm text-stone-500">No rhyme families yet. Use the pairings in the poem and manually mark them as needed.</p>
-        </section>
+        </div>
 
-        <section class="mt-5 rounded-2xl border border-stone-200 bg-white p-5">
+        <div class="rounded-2xl border border-stone-200 bg-white p-5">
           <h3 class="font-semibold">Vowel and diphthong correspondences</h3>
           <p class="mt-1 text-sm text-stone-600">Heuristic combinations of different word endings after they are identified as rhyming.</p>
           <div v-if="vowelCorrespondences.length" class="mt-3 overflow-x-auto">
@@ -413,9 +452,9 @@ watch(feedback, (value) => {
             </table>
           </div>
           <p v-else class="mt-3 text-sm text-stone-500">No corresponding rhythmic groups are present yet.</p>
-        </section>
+        </div>
 
-        <details class="mt-4 rounded-xl border border-stone-200 bg-white p-4">
+        <details class="rounded-xl border border-stone-200 bg-white p-4">
           <summary class="cursor-pointer text-sm font-medium">Rhyme feedback</summary>
           <p class="mt-2 text-xs leading-5 text-stone-500">Your judgments are stored in this browser and reused in your rhyme analysis.</p>
           <div class="mt-3 flex gap-2">
