@@ -26,7 +26,9 @@ const feedback = ref<RhymeFeedback[]>([])
 const feedbackReady = ref(false)
 const hasPoem = computed(() => lines.value.length > 0)
 
-function normalize(word: string) { return word.toLocaleLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[’'-]/g, '') }
+function normalize(word: string) {
+  return word.toLocaleLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[’'-]/g, '')
+}
 function finalWord(text: string) {
   const clean = text.trim().replace(/[^\p{L}\p{N}]+$/gu, '')
   return clean.match(/[\p{L}]+(?:[’'-][\p{L}]+)*$/u)?.[0] ?? ''
@@ -35,24 +37,24 @@ function pairKey(a: string, b: string) { return [normalize(a), normalize(b)].sor
 function rhymeTail(text: string) {
   let word = normalize(finalWord(text))
   if (!word) return ''
-  // Treat written final -e after a consonant as potentially silent: gost / moste -> ost.
+  // Middle English final -e may be silent: gost / moste can share the written tail ost.
   if (word.length > 2 && word.endsWith('e') && !/[aeiouy]e$/.test(word)) word = word.slice(0, -1)
+  // Treat historical y/i variation as a possible spelling variant, not a certainty.
   word = word.replace(/y/g, 'i')
   const vowelIndex = Math.max(word.lastIndexOf('a'), word.lastIndexOf('e'), word.lastIndexOf('i'), word.lastIndexOf('o'), word.lastIndexOf('u'))
   if (vowelIndex < 0) return word
-  let tail = word.slice(vowelIndex).replace(/([aeiou])\1+$/g, '$1')
-  // The match is a spelling heuristic, not a pronunciation claim.
-  return tail
+  return word.slice(vowelIndex).replace(/([aeiou])\1+$/g, '$1')
 }
-function feedbackFor(a: string, b: string) { return feedback.value.find((item) => pairKey(item.a, item.b) === pairKey(a, b))?.rhymes }
-function assumptions(a: string, b: string) {
-  const left = normalize(a); const right = normalize(b); const notes: string[] = []
-  const hasFinalE = left.endsWith('e') !== right.endsWith('e')
-  if (hasFinalE) notes.push('Assumes a written final -e is silent in one word.')
-  if ((/[y]$/.test(left) && /e$/.test(right)) || (/[y]$/.test(right) && /e$/.test(left))) notes.push('Assumes final -y can sound like /iː/, as in “me”.')
-  if (left !== right && /y/.test(left + right)) notes.push('Normalizes historical y/i spelling variation.')
-  if (!notes.length) notes.push('Based on matching written rhyme tails; pronunciation remains an educated guess.')
-  return notes
+function feedbackFor(a: string, b: string) {
+  return feedback.value.find((item) => pairKey(item.a, item.b) === pairKey(a, b))
+}
+function rhymeReasons(a: string, b: string) {
+  const left = normalize(a); const right = normalize(b); const reasons: string[] = []
+  if (left.endsWith('e') !== right.endsWith('e')) reasons.push('Assumes a written final -e is silent in one word.')
+  if ((/[y]$/.test(left) && /e$/.test(right)) || (/[y]$/.test(right) && /e$/.test(left))) reasons.push('Assumes final -y can have the same vowel sound as -e (as in “me”).')
+  if (/[y]/.test(left + right) && left.replace(/y/g, 'i') === right.replace(/y/g, 'i')) reasons.push('Treats historical y/i spellings as possible variants.')
+  if (!reasons.length) reasons.push('The words share a spelling-based rhyme tail; actual historical pronunciation is uncertain.')
+  return reasons
 }
 onMounted(() => {
   try {
@@ -63,7 +65,7 @@ onMounted(() => {
 })
 watch(feedback, (value) => {
   if (!feedbackReady.value) return
-  try { localStorage.setItem('verse-rhyme-feedback', JSON.stringify(value)) } catch { /* The current session remains usable if browser storage is disabled. */ }
+  try { localStorage.setItem('verse-rhyme-feedback', JSON.stringify(value)) } catch { /* Continue to work when browser storage is unavailable. */ }
 }, { deep: true })
 
 const sectionIds = computed(() => {
@@ -72,36 +74,48 @@ const sectionIds = computed(() => {
     ? lines.value.slice(0, index + 1).filter((line, at) => at > 0 && line.stanzaBreak).length
     : Math.floor(index / 4))
 })
-function sectionLineIndices(section: number) { return lines.value.map((_, i) => i).filter((i) => sectionIds.value[i] === section && !lines.value[i].gap) }
+function sectionLineIndices(section: number) {
+  return lines.value.map((_, i) => i).filter((i) => sectionIds.value[i] === section && !lines.value[i].gap)
+}
 function pairProbability(a: string, b: string, indexA: number, indexB: number): Candidate {
-  const judgment = feedbackFor(a, b)
+  const saved = feedbackFor(a, b)
   const tailA = rhymeTail(a); const tailB = rhymeTail(b)
-  const sections = sectionLineIndices(sectionIds.value[indexA])
-  const posA = sections.indexOf(indexA); const posB = sections.indexOf(indexB)
   let probability = 18
-  let reasons = assumptions(a, b)
-  if (judgment === true) { probability = 100; reasons = ['You marked this pair as a likely rhyme.'] }
-  else if (judgment === false) { probability = 0; reasons = ['You marked this pair as not rhyming.'] }
-  else if (tailA && tailA === tailB) { probability = 86; reasons = assumptions(a, b) }
-  else if (tailA && tailB) {
+  let reasons = rhymeReasons(a, b)
+  if (tailA && tailA === tailB) {
+    probability = 82
+    reasons = rhymeReasons(a, b)
+  } else if (tailA && tailB) {
     const shorter = tailA.length <= tailB.length ? tailA : tailB
     const longer = tailA.length > tailB.length ? tailA : tailB
-    if (shorter.length >= 2 && longer.endsWith(shorter)) { probability = 62; reasons = assumptions(a, b) }
+    if (shorter.length >= 2 && longer.endsWith(shorter)) {
+      probability = 58
+      reasons = [...rhymeReasons(a, b), 'The shorter written rhyme tail is contained at the end of the other word.']
+    }
   }
-  // If other stanzas establish a repeated scheme, expected positions provide evidence,
-  // but never silently override an explicit rejection or claim certainty.
+  const sameSection = sectionLineIndices(sectionIds.value[indexA])
+  const positionA = sameSection.indexOf(indexA); const positionB = sameSection.indexOf(indexB)
   const scheme = likelyScheme.value
-  if (judgment === undefined && scheme && posA >= 0 && posB >= 0 && scheme.pattern[posA] === scheme.pattern[posB] && posA !== posB) {
+  if (scheme && positionA >= 0 && positionB >= 0 && positionA !== positionB && scheme.pattern[positionA] === scheme.pattern[positionB]) {
     probability = Math.max(probability, Math.min(78, 55 + Math.round(scheme.confidence * 0.23)))
-    reasons = [...new Set([...reasons, `These positions rhyme in the poem’s likely ${scheme.pattern} pattern.`])]
+    reasons = [...new Set([...reasons, `These line positions fit the poem’s repeated ${scheme.pattern} pattern.`])]
   }
-  return { index: indexB, word: b, probability, reasons, judgment }
+  if (saved?.rhymes) {
+    probability = 100
+    // Keep the original phonological/spelling explanation visible after accepting a suggestion.
+    reasons = [...new Set([...reasons, ...rhymeReasons(a, b), 'You marked this pair as a likely rhyme; this judgment is saved in this browser.'])]
+  } else if (saved?.rhymes === false) {
+    probability = 0
+    reasons = [...new Set([...reasons, 'You marked this pair as not rhyming; this judgment is saved in this browser.'])]
+  }
+  return { index: indexB, word: b, probability, reasons, judgment: saved?.rhymes }
 }
 const candidatePairs = computed(() => lines.value.map((line, index) => {
   if (line.gap || !finalWord(line.text)) return []
   return sectionLineIndices(sectionIds.value[index]).filter((other) => other !== index).map((other) =>
     pairProbability(finalWord(line.text), finalWord(lines.value[other].text), index, other)
-  ).sort((a, b) => b.probability - a.probability)
+  ).filter((candidate) => candidate.probability > 50)
+    .sort((a, b) => b.probability - a.probability)
 }))
 const rhymeGroups = computed(() => {
   const parent = lines.value.map((_, i) => i)
@@ -111,9 +125,8 @@ const rhymeGroups = computed(() => {
     if (lines.value[a].gap) continue
     for (let b = a + 1; b < lines.value.length; b++) {
       if (lines.value[b].gap || sectionIds.value[a] !== sectionIds.value[b]) continue
-      const judgment = feedbackFor(finalWord(lines.value[a].text), finalWord(lines.value[b].text))
-      const probability = pairProbability(finalWord(lines.value[a].text), finalWord(lines.value[b].text), a, b).probability
-      if (judgment === true || (judgment === undefined && probability >= 78)) join(a, b)
+      const pair = pairProbability(finalWord(lines.value[a].text), finalWord(lines.value[b].text), a, b)
+      if (pair.probability > 50) join(a, b)
     }
   }
   const groups = new Map<number, number>()
@@ -124,20 +137,16 @@ const rhymeGroups = computed(() => {
     return groups.get(root)!
   })
 })
-const sectionPatterns = computed(() => {
-  const ids = [...new Set(sectionIds.value)]
-  return ids.map((id) => {
-    const indices = sectionLineIndices(id)
-    const labels = new Map<number, string>()
-    const pattern = indices.map((i) => {
-      const group = rhymeGroups.value[i]
-      if (group === null) return '?'
-      if (!labels.has(group)) labels.set(group, String.fromCharCode(65 + labels.size % 26))
-      return labels.get(group)!
-    }).join('')
-    return { id, indices, pattern }
-  })
-})
+const sectionPatterns = computed(() => [...new Set(sectionIds.value)].map((id) => {
+  const indices = sectionLineIndices(id); const labels = new Map<number, string>()
+  const pattern = indices.map((i) => {
+    const group = rhymeGroups.value[i]
+    if (group === null) return '?'
+    if (!labels.has(group)) labels.set(group, String.fromCharCode(65 + labels.size % 26))
+    return labels.get(group)!
+  }).join('')
+  return { id, indices, pattern }
+}))
 const likelyScheme = computed(() => {
   const patterns = sectionPatterns.value.filter((item) => item.pattern.length >= 2 && !item.pattern.includes('?'))
   if (!patterns.length) return null
@@ -146,14 +155,14 @@ const likelyScheme = computed(() => {
   const [pattern, count] = [...counts].sort((a, b) => b[1] - a[1])[0]
   return { pattern, confidence: Math.round(count / patterns.length * 100), sections: patterns.length }
 })
-const groupCounts = computed(() => {
+const rhymeCounts = computed(() => {
   const counts = new Map<number, number>()
   rhymeGroups.value.forEach((group) => { if (group !== null) counts.set(group, (counts.get(group) ?? 0) + 1) })
   return counts
 })
 function rhymeColor(index: number) {
   const group = rhymeGroups.value[index]
-  return group !== null && group !== undefined && (groupCounts.value.get(group) ?? 0) > 1 ? colors[group % colors.length] : 'transparent'
+  return group !== null && group !== undefined && (rhymeCounts.value.get(group) ?? 0) > 1 ? colors[group % colors.length] : 'transparent'
 }
 function setJudgment(indexA: number, indexB: number, rhymes: boolean) {
   const a = finalWord(lines.value[indexA].text); const b = finalWord(lines.value[indexB].text)
@@ -225,21 +234,20 @@ function exportPdf() { window.print() }
   <div class="min-h-screen bg-[#f7f7f4] text-stone-900">
     <header class="border-b border-stone-200 bg-white"><div class="mx-auto flex max-w-5xl items-center justify-between px-5 py-4 sm:px-8"><a href="#top" class="flex items-center gap-3 no-underline"><span class="grid h-9 w-9 place-items-center rounded-lg bg-[#274f3b] text-lg text-white">¶</span><span class="font-semibold">Verse</span></a><span class="text-sm text-stone-500">Poetry analysis</span></div></header>
     <main id="top" class="mx-auto max-w-5xl px-5 py-8 sm:px-8 sm:py-12">
-      <section v-if="!hasPoem" class="mx-auto max-w-3xl"><p class="mb-2 text-xs font-semibold uppercase tracking-[.18em] text-[#52715d]">Read closely</p><h1 class="text-3xl font-semibold tracking-tight sm:text-4xl">See the shape of a poem.</h1><p class="mt-3 text-stone-600">A readable poem view with syllable counts and in-place rhyme suggestions.</p><div class="mt-7 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm sm:p-7"><div class="mb-4 flex items-center justify-between"><label for="poem-title" class="text-sm font-medium">Title <span class="font-normal text-stone-400">(optional)</span></label><button class="text-sm font-medium text-[#315d45] hover:underline" @click="fileInput?.click()">Upload .txt</button><input ref="fileInput" class="hidden" type="file" accept=".txt,text/plain" @change="onFileChange"></div><input id="poem-title" v-model="poemTitle" class="mb-5 w-full rounded-lg border border-stone-200 px-3 py-2.5" placeholder="Poem title"><label for="poem-text" class="mb-2 block text-sm font-medium">Poem text</label><textarea id="poem-text" v-model="poemInput" rows="12" class="w-full resize-y rounded-lg border border-stone-200 px-3 py-3 font-serif leading-7" placeholder="One verse line per row; blank lines mark stanzas."></textarea><div class="mt-5 flex flex-wrap items-end justify-between gap-4"><label class="text-sm font-medium">Language<select v-model="language" class="mt-1.5 block rounded-lg border border-stone-200 bg-white px-3 py-2.5"><option v-for="item in languages" :key="item.value" :value="item.value">{{ item.label }}</option></select></label><button :disabled="!poemInput.trim()" class="rounded-lg bg-[#274f3b] px-5 py-3 text-sm font-semibold text-white disabled:opacity-40" @click="analyze">Analyze poem →</button></div></div><p class="mt-4 text-xs leading-5 text-stone-500">Spelling-based estimates are uncertain, especially for historical verse. Click any line ending to review its likely rhymes and the assumptions behind them.</p></section>
+      <section v-if="!hasPoem" class="mx-auto max-w-3xl"><p class="mb-2 text-xs font-semibold uppercase tracking-[.18em] text-[#52715d]">Read closely</p><h1 class="text-3xl font-semibold tracking-tight sm:text-4xl">See the shape of a poem.</h1><p class="mt-3 text-stone-600">A readable poem view with syllable counts and in-place rhyme suggestions.</p><div class="mt-7 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm sm:p-7"><div class="mb-4 flex items-center justify-between"><label for="poem-title" class="text-sm font-medium">Title <span class="font-normal text-stone-400">(optional)</span></label><button class="text-sm font-medium text-[#315d45] hover:underline" @click="fileInput?.click()">Upload .txt</button><input ref="fileInput" class="hidden" type="file" accept=".txt,text/plain" @change="onFileChange"></div><input id="poem-title" v-model="poemTitle" class="mb-5 w-full rounded-lg border border-stone-200 px-3 py-2.5" placeholder="Poem title"><label for="poem-text" class="mb-2 block text-sm font-medium">Poem text</label><textarea id="poem-text" v-model="poemInput" rows="12" class="w-full resize-y rounded-lg border border-stone-200 px-3 py-3 font-serif leading-7" placeholder="One verse line per row; blank lines mark stanzas."></textarea><div class="mt-5 flex flex-wrap items-end justify-between gap-4"><label class="text-sm font-medium">Language<select v-model="language" class="mt-1.5 block rounded-lg border border-stone-200 bg-white px-3 py-2.5"><option v-for="item in languages" :key="item.value" :value="item.value">{{ item.label }}</option></select></label><button :disabled="!poemInput.trim()" class="rounded-lg bg-[#274f3b] px-5 py-3 text-sm font-semibold text-white disabled:opacity-40" @click="analyze">Analyze poem →</button></div></div><p class="mt-4 text-xs leading-5 text-stone-500">Only rhyme suggestions above 50% are shown. Click an ending to see the estimate and its reasoning.</p></section>
       <section v-else>
         <div class="mb-5 flex flex-wrap items-center justify-between gap-3"><div><button class="mb-1 text-sm font-medium text-[#315d45] hover:underline" @click="lines = []; poemInput = ''">← New poem</button><h1 class="text-2xl font-semibold">{{ poemTitle || 'Untitled poem' }}</h1></div><div class="flex flex-wrap gap-2"><button class="rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm" @click="exportHtml">Download HTML</button><button class="rounded-lg bg-[#274f3b] px-3 py-2 text-sm font-semibold text-white" @click="exportPdf">Save PDF</button></div></div>
-        <div class="rounded-2xl border border-stone-200 bg-white shadow-sm"><div class="border-b border-stone-200 px-5 py-4 sm:px-8"><h2 class="font-semibold">Poem</h2><p class="mt-1 text-sm text-stone-500">Click a line-ending word to see likely pairings. Counts are editable by clicking them.</p><p v-if="likelyScheme" class="mt-2 text-sm text-[#315d45]">Likely rhyme scheme <strong>{{ likelyScheme.pattern }}</strong><span class="text-stone-500"> · {{ likelyScheme.confidence }}% of {{ likelyScheme.sections }} stanza/section patterns</span></p></div>
+        <div class="rounded-2xl border border-stone-200 bg-white shadow-sm"><div class="border-b border-stone-200 px-5 py-4 sm:px-8"><h2 class="font-semibold">Poem</h2><p class="mt-1 text-sm text-stone-500">Click a line-ending word to inspect likely pairs. Click a count to edit syllables.</p><p v-if="likelyScheme" class="mt-2 text-sm text-[#315d45]">Likely rhyme scheme <strong>{{ likelyScheme.pattern }}</strong><span class="text-stone-500"> · {{ likelyScheme.confidence }}% of {{ likelyScheme.sections }} stanza/section patterns</span></p></div>
           <div class="px-5 py-5 sm:px-8 sm:py-7"><div v-for="(line, index) in lines" :key="line.id" class="poem-row" :class="line.stanzaBreak ? 'stanza-break' : ''"><p v-if="line.gap" class="my-2 rounded-lg bg-amber-50 px-3 py-2 text-sm italic text-amber-900">Missing line — position preserved</p><template v-else><p class="poem-line"><span>{{ endingParts(line.text).before }}</span><button v-if="endingParts(line.text).word" class="rhyme-word" :style="{ backgroundColor: rhymeColor(index) }" :aria-expanded="activeLineId === line.id" @click="activeLineId = activeLineId === line.id ? null : line.id">{{ endingParts(line.text).word }}</button><span>{{ endingParts(line.text).after }}</span> <button class="syllable-count" title="Edit syllable count" @click="editingSyllableId = editingSyllableId === line.id ? null : line.id">({{ line.syllables }})</button></p>
             <div v-if="editingSyllableId === line.id" class="inline-panel"><label class="text-sm text-stone-600">Syllables <input :value="line.syllables" type="number" min="0" max="40" class="ml-2 w-16 rounded border border-stone-300 px-2 py-1 text-center" @input="changeSyllables(line, ($event.target as HTMLInputElement).value)"></label><button class="ml-2 text-sm text-stone-500 underline" @click="editingSyllableId = null">Done</button></div>
-            <div v-if="activeLineId === line.id" class="inline-panel rhyme-panel"><div class="mb-2 flex items-center justify-between gap-3"><p class="text-sm font-semibold">Possible rhymes for <em>{{ finalWord(line.text) }}</em></p><button class="text-xs text-stone-500 underline" @click="activeLineId = null">Close</button></div><p class="mb-3 text-xs leading-5 text-stone-500">Suggestions combine spelling evidence, your judgments, and repeated stanza pattern. Probabilities are estimates, not measured historical pronunciation.</p><div v-if="candidatePairs[index]?.length" class="space-y-2"><div v-for="candidate in candidatePairs[index]" :key="candidate.index" class="flex flex-col gap-2 rounded-lg border border-stone-200 p-3 sm:flex-row sm:items-center sm:justify-between"><div><p class="font-serif text-lg">{{ candidate.word }} <span class="font-sans text-xs text-stone-500">{{ candidate.probability }}% likely</span></p><p v-for="reason in candidate.reasons" :key="reason" class="mt-0.5 text-xs text-stone-500">{{ reason }}</p></div><div class="flex shrink-0 gap-2"><button class="rounded bg-green-50 px-2.5 py-1.5 text-xs font-semibold text-green-800 hover:bg-green-100" @click="setJudgment(index, candidate.index, true)">Likely rhyme</button><button class="rounded bg-stone-100 px-2.5 py-1.5 text-xs font-semibold text-stone-700 hover:bg-stone-200" @click="setJudgment(index, candidate.index, false)">Not a rhyme</button></div></div></div><p v-else class="text-sm text-stone-500">No other line endings in this stanza/section.</p></div></template></div><button class="mt-5 text-sm font-medium text-[#315d45] hover:underline" @click="addMissingLine()">+ Add missing line</button></div></div>
-        <details class="mt-4 rounded-xl border border-stone-200 bg-white p-4"><summary class="cursor-pointer text-sm font-medium text-stone-700">Rhyme examples and feedback</summary><p class="mt-2 text-xs leading-5 text-stone-500">Judgments are saved in this browser and reused as exact-pair guidance. Export and import examples to move them between browsers; they do not train a shared model.</p><div class="mt-3 flex flex-wrap gap-2"><button class="rounded border border-stone-300 px-2.5 py-1.5 text-xs" @click="exportFeedback">Export examples</button><button class="rounded border border-stone-300 px-2.5 py-1.5 text-xs" @click="feedbackFile?.click()">Import examples</button><input ref="feedbackFile" type="file" accept="application/json,.json" class="hidden" @change="importFeedback"></div><ul v-if="feedback.length" class="mt-3 flex flex-wrap gap-2"><li v-for="item in feedback" :key="pairKey(item.a, item.b)" class="flex items-center gap-2 rounded-full bg-stone-100 px-3 py-1 text-xs"><span>{{ item.a }} / {{ item.b }} — {{ item.rhymes ? 'rhyme' : 'not rhyme' }}</span><button class="text-stone-500 hover:text-red-700" title="Remove judgment" @click="forgetJudgment(item)">×</button></li></ul></details>
-        <p class="mt-4 text-xs leading-5 text-stone-500">There are no red flags or required confirmations. Click only the pairs you want to inspect; manual judgments override the estimate.</p>
+            <div v-if="activeLineId === line.id" class="inline-panel rhyme-panel"><div class="mb-2 flex items-center justify-between gap-3"><p class="text-sm font-semibold">Possible rhymes for <em>{{ finalWord(line.text) }}</em></p><button class="text-xs text-stone-500 underline" @click="activeLineId = null">Close</button></div><p class="mb-3 text-xs leading-5 text-stone-500">Only suggestions above 50% are listed. These are heuristic estimates, not measured historical probabilities. The reasons remain visible after you record a judgment.</p><div v-if="candidatePairs[index]?.length" class="space-y-2"><div v-for="candidate in candidatePairs[index]" :key="candidate.index" class="rounded-lg border border-stone-200 p-3"><div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between"><div><p class="font-serif text-lg">{{ candidate.word }} <span class="font-sans text-xs text-stone-500">{{ candidate.probability }}% likely</span><span v-if="candidate.judgment === true" class="ml-2 font-sans text-xs font-medium text-green-700">Accepted</span></p><p v-for="reason in candidate.reasons" :key="reason" class="mt-1 text-xs leading-5 text-stone-600">{{ reason }}</p></div><div class="flex shrink-0 gap-2"><button class="rounded bg-green-50 px-2.5 py-1.5 text-xs font-semibold text-green-800 hover:bg-green-100" @click="setJudgment(index, candidate.index, true)">{{ candidate.judgment === true ? 'Likely rhyme ✓' : 'Likely rhyme' }}</button><button class="rounded bg-stone-100 px-2.5 py-1.5 text-xs font-semibold text-stone-700 hover:bg-stone-200" @click="setJudgment(index, candidate.index, false)">Not a rhyme</button></div></div></div></div><p v-else class="text-sm text-stone-500">No other line endings in this stanza/section are above 50% likelihood.</p></div></template></div><button class="mt-5 text-sm font-medium text-[#315d45] hover:underline" @click="addMissingLine()">+ Add missing line</button></div></div>
+        <details class="mt-4 rounded-xl border border-stone-200 bg-white p-4"><summary class="cursor-pointer text-sm font-medium text-stone-700">Rhyme examples and feedback</summary><p class="mt-2 text-xs leading-5 text-stone-500">Your judgments are saved in this browser as exact word-pair guidance. Export or import examples to move them between browsers; they do not train a shared model.</p><div class="mt-3 flex flex-wrap gap-2"><button class="rounded border border-stone-300 px-2.5 py-1.5 text-xs" @click="exportFeedback">Export examples</button><button class="rounded border border-stone-300 px-2.5 py-1.5 text-xs" @click="feedbackFile?.click()">Import examples</button><input ref="feedbackFile" type="file" accept="application/json,.json" class="hidden" @change="importFeedback"></div><ul v-if="feedback.length" class="mt-3 flex flex-wrap gap-2"><li v-for="item in feedback" :key="pairKey(item.a, item.b)" class="flex items-center gap-2 rounded-full bg-stone-100 px-3 py-1 text-xs"><span>{{ item.a }} / {{ item.b }} — {{ item.rhymes ? 'rhyme' : 'not rhyme' }}</span><button class="text-stone-500 hover:text-red-700" title="Remove judgment" @click="forgetJudgment(item)">×</button></li></ul></details>
       </section>
     </main>
   </div>
 </template>
 
 <style>
-.poem-line{margin:0;min-height:1.9em;font-family:Georgia,'Times New Roman',serif;font-size:clamp(1.1rem,2.4vw,1.35rem);line-height:1.9}.rhyme-word{border-radius:4px;padding:0 3px;font:inherit;font-style:italic;color:inherit}.rhyme-word:hover,.rhyme-word[aria-expanded=true]{outline:2px solid #9aaa9d;outline-offset:2px}.syllable-count{white-space:nowrap;color:#77736c;font-family:ui-sans-serif,system-ui,sans-serif;font-size:.82em}.syllable-count:hover{color:#315d45;text-decoration:underline}.stanza-break{margin-top:1.5rem}.inline-panel{margin:.5rem 0 1rem .25rem;border-left:2px solid #d6e0d6;padding:.25rem 0 .25rem .8rem}.rhyme-panel{max-width:680px;background:#fbfcfa;padding:.8rem;border-radius:.5rem}
+.poem-line{margin:0;min-height:1.9em;font-family:Georgia,'Times New Roman',serif;font-size:clamp(1.1rem,2.4vw,1.35rem);line-height:1.9}.rhyme-word{border-radius:4px;padding:0 3px;font:inherit;font-style:italic;color:inherit}.rhyme-word:hover,.rhyme-word[aria-expanded=true]{outline:2px solid #9aaa9d;outline-offset:2px}.syllable-count{white-space:nowrap;color:#77736c;font-family:ui-sans-serif,system-ui,sans-serif;font-size:.82em}.syllable-count:hover{color:#315d45;text-decoration:underline}.stanza-break{margin-top:1.5rem}.inline-panel{margin:.5rem 0 1rem .25rem;border-left:2px solid #d6e0d6;padding:.25rem 0 .25rem .8rem}.rhyme-panel{max-width:760px;background:#fbfcfa;padding:.8rem;border-radius:.5rem}
 @media print{body{background:white!important}header,button,details,.inline-panel{display:none!important}main{max-width:none!important;padding:0!important}.poem-line{font-size:13pt}.stanza-break{margin-top:1.2rem}}
 </style>
