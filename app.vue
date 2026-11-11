@@ -8,24 +8,11 @@ type Candidate = { index: number; word: string; probability: number; reasons: st
 const languages = [{ value: 'en', label: 'English' }, { value: 'fr', label: 'French' }, { value: 'es', label: 'Spanish' }, { value: 'it', label: 'Italian' }, { value: 'enm', label: 'Middle English' }, { value: 'fro', label: 'Old French' }, { value: 'ang', label: 'Anglo-Norman' }, { value: 'other', label: 'Other / uncertain' }]
 const colors = ['#dff1e5', '#fce4d8', '#e5e8fb', '#f8edc8', '#f4dff0', '#d9eff1', '#eee2d5', '#e4e9df']
 const starterPairs = [['pounde','grounde'],['begynne','thinne'],['be','yemanry'],['stryfe','lyfe'],['me','be'],['disgrate','state'],['ende','amende'],['rychesse','kyndnesse'],['ayre','fayre'],['bolde','solde'],['the','see'],['tresouré','be'],['the','poverté'],['none','Johnn'],['rowe','sawe'],['Calveré','be'],['day','Abbey'],['contré','me'],['ryvere','bryre']]
-const language = ref('enm')
-const poemTitle = ref('')
-const poemInput = ref('')
-const sourceUrl = ref('')
-const period = ref('')
-const year = ref('')
-const lines = ref<Line[]>([])
-const nextId = ref(1)
-const fileInput = ref<HTMLInputElement | null>(null)
-const activeRhymeId = ref<number | null>(null)
-const editingWord = ref<{ lineId: number; partIndex: number } | null>(null)
-const feedbackFile = ref<HTMLInputElement | null>(null)
-const feedback = ref<RhymeFeedback[]>([])
-const savedTexts = ref<SavedText[]>([])
-const selectedSavedId = ref('')
-const status = ref('')
-const storageReady = ref(false)
-const schemeOverrides = ref<Record<number, string>>({})
+const language = ref('enm'), poemTitle = ref(''), poemInput = ref(''), sourceUrl = ref(''), period = ref(''), year = ref('')
+const lines = ref<Line[]>([]), nextId = ref(1), fileInput = ref<HTMLInputElement | null>(null)
+const activeRhymeId = ref<number | null>(null), editingWord = ref<{ lineId: number; partIndex: number } | null>(null)
+const feedbackFile = ref<HTMLInputElement | null>(null), feedback = ref<RhymeFeedback[]>([]), savedTexts = ref<SavedText[]>([])
+const selectedSavedId = ref(''), status = ref(''), storageReady = ref(false), schemeOverrides = ref<Record<number, string>>({})
 const hasPoem = computed(() => lines.value.length > 0)
 
 function normalize(word: string) { return word.toLocaleLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[’'-]/g, '') }
@@ -47,10 +34,7 @@ function tail(word: string) {
   return (value.match(/[aeiou]+[^aeiou]*$/i)?.[0] ?? value).replace(/([aeiou])\1+$/g, '$1')
 }
 function exactFeedback(a: string, b: string) { return feedback.value.find((item) => pairKey(item.a, item.b) === pairKey(a, b)) }
-function learned(a: string, b: string) {
-  const ta = tail(a); const tb = tail(b)
-  return !!ta && ta === tb && feedback.value.some((item) => item.rhymes && tail(item.a) === ta && tail(item.b) === tb)
-}
+function learned(a: string, b: string) { const t = tail(a); return !!t && t === tail(b) && feedback.value.some((item) => item.rhymes && tail(item.a) === t && tail(item.b) === t) }
 function rhymeReasons(a: string, b: string) {
   const x = normalize(a); const y = normalize(b); const reasons: string[] = []
   if (/[éèê]$/i.test(a) || /[éèê]$/i.test(b)) reasons.push('Treats final accented é/è/ê as pronounced.')
@@ -78,11 +62,11 @@ function analyze() {
   lines.value = result; activeRhymeId.value = null; editingWord.value = null; schemeOverrides.value = {}
 }
 function editSyllables(part: Part, value: string) { part.syllables = Math.max(0, Math.min(20, Number(value) || 0)) }
-function sectionIds() {
+function sectionIdList() {
   const stanzaMode = lines.value.some((line, i) => i > 0 && line.stanzaBreak)
   return lines.value.map((_, i) => stanzaMode ? lines.value.slice(0, i + 1).filter((line, j) => j > 0 && line.stanzaBreak).length : Math.floor(i / 4))
 }
-const sections = computed(sectionIds)
+const sections = computed(sectionIdList)
 function indicesInSection(id: number) { return lines.value.map((_, i) => i).filter((i) => sections.value[i] === id && !lines.value[i].gap && !!finalWord(lines.value[i])) }
 function rawProbability(a: string, b: string) {
   const judgment = exactFeedback(a, b)
@@ -96,51 +80,32 @@ function canonicalPattern(labels: number[]) {
   return labels.map((label) => { if (!map.has(label)) map.set(label, String.fromCharCode(65 + map.size % 26)); return map.get(label)! }).join('')
 }
 function partitions(length: number) {
-  if (length < 1) return [[]]
-  if (length > 8) return []
+  if (length < 1 || length > 8) return []
   const results: number[][] = []
-  const visit = (prefix: number[], max: number) => {
-    if (prefix.length === length) { results.push(prefix); return }
-    for (let label = 0; label <= max + 1; label++) visit([...prefix, label], Math.max(max, label))
-  }
-  visit([0], 0)
-  return results
+  const visit = (prefix: number[], max: number) => { if (prefix.length === length) { results.push(prefix); return }; for (let label = 0; label <= max + 1; label++) visit([...prefix, label], Math.max(max, label)) }
+  visit([0], 0); return results
 }
 function bestPattern(indices: number[]) {
-  const words = indices.map((i) => finalWord(lines.value[i]))
-  const options = partitions(indices.length)
-  if (!options.length) {
-    const labels: number[] = []
-    for (let i = 0; i < words.length; i++) {
-      let label = i
-      for (let j = 0; j < i; j++) if (rawProbability(words[i], words[j]) >= 65) { label = labels[j]; break }
-      labels.push(label)
-    }
-    return { pattern: canonicalPattern(labels), fit: 0, options: [canonicalPattern(labels)] }
-  }
+  const words = indices.map((i) => finalWord(lines.value[i])); const options = partitions(indices.length)
+  if (!options.length) return { pattern: 'A'.repeat(indices.length), fit: 0, options: ['A'.repeat(indices.length)] }
   let best = options[0]; let bestScore = -Infinity
   for (const candidate of options) {
-    let score = 0; let comparisons = 0
-    for (let i = 0; i < words.length; i++) for (let j = i + 1; j < words.length; j++) {
-      const p = rawProbability(words[i], words[j]); score += candidate[i] === candidate[j] ? p : 100 - p; comparisons++
-    }
-    // Slightly prefer a compact, interpretable scheme when pairwise evidence ties.
-    const groups = new Set(candidate).size
-    score -= Math.max(0, groups - 1) * 0.15
+    let score = 0
+    for (let i = 0; i < words.length; i++) for (let j = i + 1; j < words.length; j++) { const p = rawProbability(words[i], words[j]); score += candidate[i] === candidate[j] ? p : 100 - p }
+    score -= Math.max(0, new Set(candidate).size - 1) * .15
     if (score > bestScore) { bestScore = score; best = candidate }
   }
-  const pattern = canonicalPattern(best)
   const ranked = options.map((candidate) => {
     let score = 0; let total = 0
     for (let i = 0; i < words.length; i++) for (let j = i + 1; j < words.length; j++) { const p = rawProbability(words[i], words[j]); score += candidate[i] === candidate[j] ? p : 100 - p; total += 100 }
     return { pattern: canonicalPattern(candidate), score: total ? Math.round(score / total * 100) : 0 }
   }).sort((a, b) => b.score - a.score)
-  return { pattern, fit: ranked[0]?.score ?? 0, options: ranked.map((item) => item.pattern) }
+  return { pattern: canonicalPattern(best), fit: ranked[0]?.score ?? 0, options: ranked.map((item) => item.pattern) }
 }
 const schemes = computed<Scheme[]>(() => [...new Set(sections.value)].map((id) => {
   const indices = indicesInSection(id); const best = bestPattern(indices); const override = schemeOverrides.value[id]
-  const patterns = [...new Set([...best.options, best.pattern, 'A'.repeat(indices.length), ...[2,4,6].filter((n) => n <= indices.length).map((size) => Array.from({ length: indices.length }, (_, i) => String.fromCharCode(65 + Math.floor(i / size))).join(''))])]
-  return { id, indices, detected: best.pattern, pattern: override && patterns.includes(override) ? override : best.pattern, fit: best.fit, options: patterns }
+  const choices = [...new Set([...best.options, 'A'.repeat(indices.length), ...[2,4,6].filter(n => n <= indices.length).map(size => Array.from({ length: indices.length }, (_, i) => String.fromCharCode(65 + Math.floor(i / size))).join(''))])]
+  return { id, indices, detected: best.pattern, pattern: override && choices.includes(override) ? override : best.pattern, fit: best.fit, options: choices }
 }))
 const schemeSummary = computed(() => {
   const usable = schemes.value.filter((scheme) => scheme.indices.length > 1)
@@ -150,10 +115,8 @@ const schemeSummary = computed(() => {
   return { pattern, count, sections: usable.length }
 })
 function estimate(a: string, b: string, aIndex: number, bIndex: number): Candidate {
-  const exact = exactFeedback(a, b); let probability = rawProbability(a, b); const reasons = rhymeReasons(a, b)
+  const exact = exactFeedback(a, b); const probability = rawProbability(a, b); const reasons = rhymeReasons(a, b)
   if (learned(a, b)) reasons.push('This matches a rhyme-tail pattern from a pair accepted previously.')
-  const scheme = schemes.value.find((item) => item.indices.includes(aIndex)); const pa = scheme?.indices.indexOf(aIndex) ?? -1; const pb = scheme?.indices.indexOf(bIndex) ?? -1
-  if (scheme && pa >= 0 && pb >= 0 && pa !== pb && scheme.pattern[pa] === scheme.pattern[pb] && !exact) { probability = Math.max(probability, 68); reasons.push(`These positions share the selected ${scheme.pattern} pattern; the spelling evidence is weaker.`) }
   if (exact?.rhymes === true) reasons.push('You accepted this exact pair; the judgment is saved in this browser.')
   if (exact?.rhymes === false) reasons.push('You marked this exact pair as not rhyming.')
   return { index: bIndex, word: b, probability, reasons, accepted: exact?.rhymes === true }
@@ -191,11 +154,10 @@ function onFileChange(event: Event) { const input = event.target as HTMLInputEle
 function importFeedback(event: Event) { const input = event.target as HTMLInputElement; const file = input.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => { try { const data = JSON.parse(String(reader.result)) as RhymeFeedback[]; if (!Array.isArray(data) || data.some((item) => typeof item.a !== 'string' || typeof item.b !== 'string' || typeof item.rhymes !== 'boolean')) throw new Error(); feedback.value = [...feedback.value.filter((old) => !data.some((item) => pairKey(old.a, old.b) === pairKey(item.a, item.b))), ...data] } catch { window.alert('Please select a valid rhyme-feedback JSON file.') } }; reader.readAsText(file); input.value = '' }
 function exportFeedback() { download(new Blob([JSON.stringify(feedback.value, null, 2)], { type: 'application/json' }), 'verse-rhyme-feedback.json') }
 function addMissingLine(index = lines.value.length - 1) { lines.value.splice(index + 1, 0, { id: nextId.value++, parts: [], gap: true, stanzaBreak: false }) }
-function endingParts(line: Line) { return wordParts(line).at(-1)?.part }
 function escapeHtml(text: string) { return text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!)) }
 function safeName() { return (poemTitle.value.trim() || 'poem').replace(/[^\p{L}\p{N}-]+/gu, '-').replace(/^-|-$/g, '').toLowerCase() || 'poem' }
 function download(blob: Blob, name: string) { const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000) }
-function exportHtml() { const title = escapeHtml(poemTitle.value || 'Untitled poem'); const body = lines.value.map((line, index) => line.gap ? '<p class="line missing">[Missing line]</p>' : `<p class="line">${escapeHtml(lineText(line).replace(/([^.])\.{3,}\s*$/, '$1…'))}${isTruncated(line) ? ' <span class="truncated">[text incomplete]</span>' : ''}${!isTruncated(line) && finalWord(line) ? ` <mark style="background:${rhymeColor(index)}">${escapeHtml(finalWord(line))}</mark>` : ''} <span class="count">(${lineTotal(line)})</span></p>`).join('\n'); download(new Blob([`<!doctype html><html lang="en"><meta charset="utf-8"><title>${title}</title><style>body{font:20px/1.9 Georgia,serif;max-width:760px;margin:48px auto;padding:0 24px}.line{margin:0}.count,.truncated{font:14px system-ui;color:#777}.truncated{font-style:italic}</style><h1>${title}</h1>${body}</html>`], { type: 'text/html;charset=utf-8' }), `${safeName()}.html`) }
+function exportHtml() { const title = escapeHtml(poemTitle.value || 'Untitled poem'); const body = lines.value.map((line, index) => line.gap ? '<p class="line missing">[Missing line]</p>' : `<p class="line">${escapeHtml(lineText(line))} <span class="count">(${lineTotal(line)})</span>${isTruncated(line) ? ' <span class="truncated">[text incomplete]</span>' : ''}</p>`).join('\n'); download(new Blob([`<!doctype html><html lang="en"><meta charset="utf-8"><title>${title}</title><style>body{font:20px/1.9 Georgia,serif;max-width:760px;margin:48px auto;padding:0 24px}.line{margin:0}.count,.truncated{font:14px system-ui;color:#777}.truncated{font-style:italic}</style><h1>${title}</h1>${body}</html>`], { type: 'text/html;charset=utf-8' }), `${safeName()}.html`) }
 function exportPdf() { window.print() }
 </script>
 
@@ -208,8 +170,8 @@ function exportPdf() { window.print() }
         <section v-if="savedTexts.length" class="mt-5 rounded-2xl border border-stone-200 bg-white p-5"><h2 class="font-semibold">Saved texts <span class="text-sm font-normal text-stone-500">(this browser)</span></h2><ul class="mt-3 space-y-2"><li v-for="item in savedTexts" :key="item.id" class="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-stone-50 px-3 py-2"><button class="text-left text-sm font-medium text-[#315d45] hover:underline" @click="loadText(item)">{{ item.title }} <span class="font-normal text-stone-500">· {{ item.language }} · {{ item.period || 'period unspecified' }} {{ item.year }}</span></button><button class="text-xs text-stone-500 hover:text-red-700" @click="deleteText(item.id)">Delete</button></li></ul></section>
         <p class="mt-4 text-xs leading-5 text-stone-500">Saved poems remain in this browser. Use <a class="text-[#315d45] underline" href="./rhyme-dictionaries.html">Rhyme dictionaries</a> to build and compare per-text rhyme-pair lists.</p></section>
       <section v-else><div class="mb-5 flex flex-wrap items-center justify-between gap-3"><div><button class="mb-1 text-sm font-medium text-[#315d45] hover:underline" @click="lines = []; poemInput = ''">← New poem</button><h1 class="text-2xl font-semibold">{{ poemTitle || 'Untitled poem' }}</h1><p class="mt-1 text-xs text-stone-500">{{ languages.find(x => x.value === language)?.label }} · {{ period || 'period unspecified' }} {{ year }} <a v-if="sourceUrl" :href="sourceUrl" target="_blank" rel="noopener" class="underline">Source</a></p></div><div class="flex flex-wrap gap-2"><button class="rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm" @click="saveText">Save text</button><button class="rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm" @click="exportHtml">Download HTML</button><button class="rounded-lg bg-[#274f3b] px-3 py-2 text-sm font-semibold text-white" @click="exportPdf">Save PDF</button></div></div>
-        <div class="rounded-2xl border border-stone-200 bg-white shadow-sm"><div class="border-b border-stone-200 px-5 py-4 sm:px-8"><h2 class="font-semibold">Poem</h2><p class="mt-1 text-sm text-stone-500">Click any word to adjust syllables. Use “Rhymes” to inspect pair suggestions. Incomplete endings are not used as rhyme words.</p><p v-if="schemeSummary" class="mt-2 text-sm text-[#315d45]">Most common best-fit scheme: <strong>{{ schemeSummary.pattern }}</strong><span class="text-stone-500"> · {{ schemeSummary.count }} of {{ schemeSummary.sections }} sections; select a scheme per section below.</span></p><p v-if="status" class="mt-2 text-sm text-[#315d45]" role="status">{{ status }}</p></div>
-          <div class="px-5 py-5 sm:px-8 sm:py-7"><div v-for="(line, index) in lines" :key="line.id" class="poem-row" :class="line.stanzaBreak ? 'stanza-break' : ''"><p v-if="line.gap" class="my-2 rounded-lg bg-amber-50 px-3 py-2 text-sm italic text-amber-900">Missing line — position preserved</p><template v-else><p class="poem-line"><template v-for="(part, partIndex) in line.parts" :key="partIndex"><button v-if="part.syllables !== undefined" class="word-button" :class="partIndex === wordParts(line).at(-1)?.partIndex ? 'end-word' : ''" :style="partIndex === wordParts(line).at(-1)?.partIndex && !isTruncated(line) ? { backgroundColor: rhymeColor(index) } : {}" :aria-expanded="editingWord?.lineId === line.id && editingWord.partIndex === partIndex" :title="`Click to edit syllables for ${part.text}`" @click="editingWord = editingWord?.lineId === line.id && editingWord.partIndex === partIndex ? null : { lineId: line.id, partIndex }">{{ part.text }}</button><span v-else>{{ part.text }}</span></template><span v-if="isTruncated(line)" class="ml-2 rounded bg-amber-50 px-2 py-1 font-sans text-xs text-amber-800">Incomplete ending — excluded from rhyme analysis</span><button v-else class="rhyme-link" :aria-expanded="activeRhymeId === line.id" @click="activeRhymeId = activeRhymeId === line.id ? null : line.id">Rhymes</button></p>
+        <div class="rounded-2xl border border-stone-200 bg-white shadow-sm"><div class="border-b border-stone-200 px-5 py-4 sm:px-8"><h2 class="font-semibold">Poem</h2><p class="mt-1 text-sm text-stone-500">Click any word to adjust its syllables. Line totals remain visible at a glance. Use “Rhymes” to inspect pair suggestions.</p><p v-if="schemeSummary" class="mt-2 text-sm text-[#315d45]">Most common best-fit scheme: <strong>{{ schemeSummary.pattern }}</strong><span class="text-stone-500"> · {{ schemeSummary.count }} of {{ schemeSummary.sections }} sections; select a scheme per section below.</span></p><p v-if="status" class="mt-2 text-sm text-[#315d45]" role="status">{{ status }}</p></div>
+          <div class="px-5 py-5 sm:px-8 sm:py-7"><div v-for="(line, index) in lines" :key="line.id" class="poem-row" :class="line.stanzaBreak ? 'stanza-break' : ''"><p v-if="line.gap" class="my-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">Missing line — position preserved</p><template v-else><p class="poem-line"><template v-for="(part, partIndex) in line.parts" :key="partIndex"><button v-if="part.syllables !== undefined" class="word-button" :class="partIndex === wordParts(line).at(-1)?.partIndex ? 'end-word' : ''" :style="partIndex === wordParts(line).at(-1)?.partIndex && !isTruncated(line) ? { backgroundColor: rhymeColor(index) } : {}" :aria-expanded="editingWord?.lineId === line.id && editingWord.partIndex === partIndex" :title="`Click to edit syllables for ${part.text}`" @click="editingWord = editingWord?.lineId === line.id && editingWord.partIndex === partIndex ? null : { lineId: line.id, partIndex }">{{ part.text }}</button><span v-else>{{ part.text }}</span></template><span class="line-total" :title="`${lineTotal(line)} syllables in this line`">({{ lineTotal(line) }})</span><span v-if="isTruncated(line)" class="truncated-tag">Incomplete ending — excluded from rhyme analysis</span><button v-else class="rhyme-link" :aria-expanded="activeRhymeId === line.id" @click="activeRhymeId = activeRhymeId === line.id ? null : line.id">Rhymes</button></p>
             <div v-if="editingWord?.lineId === line.id" class="inline-panel"><label class="text-sm text-stone-700">Syllables in “{{ line.parts[editingWord.partIndex].text }}” <input :value="line.parts[editingWord.partIndex].syllables" type="number" min="0" max="20" class="ml-2 w-16 rounded border border-stone-300 px-2 py-1 text-center" @input="editSyllables(line.parts[editingWord.partIndex], ($event.target as HTMLInputElement).value)"></label><button class="ml-2 text-sm text-stone-500 underline" @click="editingWord = null">Done</button><p v-if="/[éèê]$/i.test(line.parts[editingWord.partIndex].text)" class="mt-1 text-xs text-stone-500">The accented final vowel is counted as a pronounced syllable.</p><p class="mt-1 text-xs text-stone-500">Line total: {{ lineTotal(line) }} syllables</p></div>
             <div v-if="activeRhymeId === line.id" class="inline-panel rhyme-panel"><div class="mb-2 flex items-center justify-between"><p class="text-sm font-semibold">Possible rhymes for {{ finalWord(line) }}</p><button class="text-xs text-stone-500 underline" @click="activeRhymeId = null">Close</button></div><p class="mb-3 text-xs leading-5 text-stone-500">Suggestions above 50%; explanations remain visible after a judgment.</p><div v-if="candidates[index]?.length" class="space-y-2"><div v-for="candidate in candidates[index]" :key="candidate.index" class="rounded-lg border border-stone-200 p-3"><div class="flex flex-wrap items-start justify-between gap-3"><div><p class="font-serif text-lg">{{ candidate.word }} <span class="font-sans text-xs text-stone-500">{{ candidate.probability }}% estimate</span><span v-if="candidate.accepted" class="ml-2 font-sans text-xs text-green-700">Accepted</span></p><p v-for="reason in candidate.reasons" :key="reason" class="mt-1 text-xs leading-5 text-stone-600">{{ reason }}</p></div><div class="flex gap-2"><button class="rounded bg-green-50 px-2.5 py-1.5 text-xs font-semibold text-green-800" @click="saveJudgment(index, candidate.index, true)">Likely rhyme</button><button class="rounded bg-stone-100 px-2.5 py-1.5 text-xs font-semibold text-stone-700" @click="saveJudgment(index, candidate.index, false)">Not a rhyme</button></div></div></div></div><p v-else class="text-sm text-stone-500">No other line endings in this section are above 50%.</p></div></template></div>
             <div v-for="scheme in schemes" :key="scheme.id" class="mt-4 flex flex-wrap items-center gap-2 rounded-lg bg-stone-50 px-3 py-2 text-sm"><span class="font-medium">Section {{ scheme.id + 1 }} scheme</span><select :value="scheme.pattern" class="rounded border border-stone-300 bg-white px-2 py-1" @change="setScheme(scheme.id, ($event.target as HTMLSelectElement).value)"><option v-for="option in scheme.options" :key="option" :value="option">{{ option }}{{ option === scheme.detected ? ' — best fit' : '' }}</option></select><span class="text-xs text-stone-500">Detected {{ scheme.detected }} · pair-evidence fit {{ scheme.fit }}%</span><button v-if="schemeOverrides[scheme.id]" class="text-xs text-[#315d45] underline" @click="setScheme(scheme.id, scheme.detected)">Reset to best fit</button></div>
@@ -221,6 +183,6 @@ function exportPdf() { window.print() }
 </template>
 
 <style>
-.poem-line{margin:0;min-height:1.9em;font-family:Georgia,'Times New Roman',serif;font-size:clamp(1.1rem,2.4vw,1.35rem);line-height:1.9}.word-button{border:0;background:transparent;padding:0 1px;color:inherit;font:inherit;font-style:normal;cursor:pointer}.word-button:hover,.word-button:focus-visible{border-radius:3px;outline:2px solid #9aaa9d;outline-offset:1px}.end-word{border-radius:4px;padding:0 3px}.rhyme-link{margin-left:.5rem;border:0;background:transparent;color:#52715d;font:.72rem ui-sans-serif,system-ui,sans-serif;text-decoration:underline;cursor:pointer}.stanza-break{margin-top:1.5rem}.inline-panel{margin:.5rem 0 1rem .25rem;border-left:2px solid #d6e0d6;padding:.25rem 0 .25rem .8rem}.rhyme-panel{max-width:760px;border-radius:.5rem;background:#fbfcfa;padding:.8rem}
+.poem-line{margin:0;min-height:1.9em;font-family:Georgia,'Times New Roman',serif;font-size:clamp(1.1rem,2.4vw,1.35rem);line-height:1.9}.word-button{border:0;background:transparent;padding:0 1px;color:inherit;font:inherit;font-style:normal;cursor:pointer}.word-button:hover,.word-button:focus-visible{border-radius:3px;outline:2px solid #9aaa9d;outline-offset:1px}.end-word{border-radius:4px;padding:0 3px}.line-total{display:inline-block;white-space:nowrap;margin-left:.3rem;color:#78756e;font: .75rem ui-sans-serif,system-ui,sans-serif;vertical-align:middle}.truncated-tag{display:inline-block;margin-left:.5rem;border-radius:4px;background:#fff7e6;padding:2px 6px;color:#8a5b16;font: .7rem ui-sans-serif,system-ui,sans-serif;vertical-align:middle}.rhyme-link{margin-left:.5rem;border:0;background:transparent;color:#52715d;font:.72rem ui-sans-serif,system-ui,sans-serif;text-decoration:underline;cursor:pointer}.stanza-break{margin-top:1.5rem}.inline-panel{margin:.5rem 0 1rem .25rem;border-left:2px solid #d6e0d6;padding:.25rem 0 .25rem .8rem}.rhyme-panel{max-width:760px;border-radius:.5rem;background:#fbfcfa;padding:.8rem}
 @media print{body{background:white!important;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}header,button,details,.inline-panel{display:none!important}.word-button{display:inline!important;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}main{max-width:none!important;padding:0!important}.poem-line{font-size:13pt}.stanza-break{margin-top:1.2rem}}
 </style>
