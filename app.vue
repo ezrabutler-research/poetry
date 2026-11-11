@@ -26,22 +26,64 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const showTools = ref(false)
 const isAnalyzed = computed(() => lines.value.length > 0)
 
+function finalWord(text: string) {
+  const withoutTrailingPunctuation = text.trim().replace(/[^\p{L}\p{N}]+$/gu, '')
+  return withoutTrailingPunctuation.match(/[\p{L}]+(?:[’'-][\p{L}]+)*$/u)?.[0] ?? ''
+}
+
 function rhymeKey(text: string) {
-  const word = text.trim().toLocaleLowerCase().match(/[\p{L}’'-]+/u)?.[0]?.replace(/[’'-]/g, '') ?? ''
+  const word = finalWord(text)
   if (!word) return ''
-  return word.normalize('NFD').replace(/[\u0300-\u036f]/g, '').slice(-3)
+  let normalized = word.toLocaleLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[’'-]/g, '')
+  const vowels = /[aeiouy]/i
+  const hasEarlierVowel = [...normalized.slice(0, -1)].some((char) => vowels.test(char))
+  // In these spellings final -e is often silent; retain it in the rhyme ending,
+  // but start the rhyme at the preceding vowel (including a written diphthong).
+  if (normalized.endsWith('e') && normalized.length > 1 && !vowels.test(normalized.at(-2)!) && hasEarlierVowel) {
+    normalized = normalized.slice(0, -1)
+    let start = normalized.length - 1
+    while (start > 0 && vowels.test(normalized[start - 1])) start--
+    normalized = normalized.slice(start) + 'e'
+  } else {
+    let start = normalized.length - 1
+    while (start > 0 && vowels.test(normalized[start - 1]) && vowels.test(normalized[start])) start--
+    normalized = normalized.slice(start)
+  }
+  // Middle English spellings commonly interchange y/i; final y can rhyme with e.
+  normalized = normalized.replace(/y/g, 'i').replace(/i$/, 'e')
+  // Normalize doubled final vowel spellings such as see/the to the same vowel ending.
+  normalized = normalized.replace(/([aeiou])\1+$/g, '$1')
+  return normalized
 }
 
 const rhymeGroups = computed(() => {
-  const keys = new Map<string, number>()
-  let next = 0
-  return lines.value.map((line) => {
-    if (line.gap || !line.text.trim()) return null
+  const hasStanzaBreaks = lines.value.some((line, index) => index > 0 && line.stanzaBreak)
+  const groups: (number | null)[] = []
+  let nextGroup = 0
+  let section = -1
+  let sectionKeys = new Map<string, number>()
+
+  lines.value.forEach((line, index) => {
+    const nextSection = hasStanzaBreaks
+      ? (section < 0 ? 0 : section + (line.stanzaBreak ? 1 : 0))
+      : Math.floor(index / 4)
+    if (nextSection !== section) {
+      section = nextSection
+      sectionKeys = new Map<string, number>()
+    }
+    if (line.gap || !line.text.trim()) {
+      groups.push(null)
+      return
+    }
     const key = rhymeKey(line.text)
-    if (!key) return null
-    if (!keys.has(key)) keys.set(key, next++)
-    return keys.get(key)!
+    if (!key) {
+      groups.push(null)
+      return
+    }
+    if (!sectionKeys.has(key)) sectionKeys.set(key, nextGroup++)
+    groups.push(sectionKeys.get(key)!)
   })
+  return groups
 })
 const rhymeCounts = computed(() => {
   const counts = new Map<number, number>()
@@ -128,8 +170,10 @@ function escapeHtml(text: string) {
   return text.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!))
 }
 function endingParts(text: string) {
-  const match = text.match(/^(.*?)([\p{L}’'-]+)([^\p{L}’'-]*)$/u)
-  return match ? { before: match[1], word: match[2], after: match[3] } : { before: text, word: '', after: '' }
+  const word = finalWord(text)
+  if (!word) return { before: text, word: '', after: '' }
+  const start = text.lastIndexOf(word)
+  return { before: text.slice(0, start), word, after: text.slice(start + word.length) }
 }
 function exportHtml() {
   const body = lines.value.map((line, index) => {
@@ -189,7 +233,7 @@ function exportPdf() { window.print() }
           <div class="flex flex-wrap gap-2"><button class="rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm hover:bg-stone-50" @click="showTools = !showTools">{{ showTools ? 'Hide tools' : 'Scansion & editing' }}</button><button class="rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm hover:bg-stone-50" @click="exportHtml">Download HTML</button><button class="rounded-lg bg-[#274f3b] px-3 py-2 text-sm font-semibold text-white hover:bg-[#1d3d2c]" @click="exportPdf">Save PDF</button></div>
         </div>
         <div class="rounded-2xl border border-stone-200 bg-white shadow-sm">
-          <div class="border-b border-stone-200 px-5 py-4 sm:px-8"><h2 class="font-semibold">Poem</h2><p class="mt-1 text-sm text-stone-500">Syllable counts appear at the end of each line. Rhyming end words share a color.</p></div>
+          <div class="border-b border-stone-200 px-5 py-4 sm:px-8"><h2 class="font-semibold">Poem</h2><p class="mt-1 text-sm text-stone-500">Syllable counts appear at line endings. Only matching rhyme pairs in the same stanza or four-line section are highlighted.</p></div>
           <div class="px-5 py-5 sm:px-8 sm:py-7">
             <div v-for="(line, index) in lines" :key="line.id" class="line-row" :class="line.stanzaBreak ? 'stanza-break' : ''">
               <template v-if="line.gap"><p class="my-2 rounded-lg bg-amber-50 px-3 py-2 text-sm italic text-amber-900">Missing line <span class="text-amber-800/70">— position preserved</span></p></template>
@@ -202,10 +246,10 @@ function exportPdf() { window.print() }
                 </div>
               </template>
             </div>
-            <div class="mt-5 flex flex-wrap items-center gap-4 border-t border-stone-100 pt-4"><button class="text-sm font-medium text-[#315d45] hover:underline" @click="addMissingLine()">+ Add missing line</button><span class="text-xs text-stone-400">No line or stanza numbers are used.</span></div>
+            <div class="mt-5 flex flex-wrap items-center gap-4 border-t border-stone-100 pt-4"><button class="text-sm font-medium text-[#315d45] hover:underline" @click="addMissingLine()">+ Add missing line</button></div>
           </div>
         </div>
-        <p class="mt-4 text-xs leading-5 text-stone-500">Automated counts and rhyme matches are suggestions; historical pronunciation and poetic license can change both.</p>
+        <p class="mt-4 text-xs leading-5 text-stone-500">Syllable counts and spelling-based rhyme suggestions are approximate; review historical pronunciations and variant spellings.</p>
       </section>
     </main>
   </div>
