@@ -8,3 +8,20 @@ body { margin: 0; color: #24231f; font-family: Inter, ui-sans-serif, system-ui, 
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
 ::selection { background: #dce8df; }
+
+/* The poem's ending words are buttons so they can open rhyme review. Keep those
+   text spans visible in print, while hiding interactive controls, and request
+   that browsers preserve the rhyme-group highlight colors in PDF output. */
+@media print {
+  body, .word-button {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  button.word-button {
+    display: inline !important;
+    border: 0 !important;
+    color: #24231f !important;
+    font-style: normal !important;
+    box-shadow: none !important;
+  }
+}
