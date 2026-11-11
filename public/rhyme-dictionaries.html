@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rhyme dictionaries — Verse</title>
+  <style>
+    :root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#292821;background:#f7f7f4}*{box-sizing:border-box}body{margin:0}header{background:#fff;border-bottom:1px solid #e7e5e4;padding:16px 24px}header a{color:#315d45;text-decoration:none;font-weight:700}.wrap{max-width:980px;margin:0 auto;padding:32px 20px 60px}h1{font-size:clamp(1.7rem,4vw,2.4rem);margin:.2em 0}h2{font-size:1.12rem;margin:0 0 12px}.intro{color:#66645d;line-height:1.6}.card{background:white;border:1px solid #e7e5e4;border-radius:16px;padding:20px;margin-top:18px;box-shadow:0 1px 3px #00000008}label{display:block;font-size:.88rem;font-weight:600;margin:12px 0 6px}input,textarea,select{font:inherit;border:1px solid #d6d3d1;border-radius:8px;padding:10px;width:100%;background:#fff;color:inherit}textarea{min-height:180px;line-height:1.55;resize:vertical}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}button,.button{border:0;border-radius:8px;padding:10px 14px;background:#274f3b;color:white;font:600 .9rem inherit;cursor:pointer;text-decoration:none;display:inline-block}button.secondary,.button.secondary{background:#f1f0ec;color:#35342f;border:1px solid #dedbd5}button.danger{background:#fff;color:#8f342e;border:1px solid #e6c6c2}.muted{color:#77746d;font-size:.85rem;line-height:1.5}.status{color:#315d45;margin-top:10px;font-size:.9rem}.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;font-size:.92rem}th,td{text-align:left;padding:9px 10px;border-bottom:1px solid #eeece8;vertical-align:top}th{font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;color:#68665f}.pill{display:inline-block;border-radius:999px;background:#e9eee8;padding:3px 8px;font-size:.78rem;color:#315d45}.two-col{display:grid;grid-template-columns:1fr 1fr;gap:14px}.empty{color:#77746d;padding:12px 0}@media(max-width:620px){.two-col{grid-template-columns:1fr}.wrap{padding-top:22px}}
+  </style>
+</head>
+<body>
+  <header><a href="./">¶ Verse</a></header>
+  <main class="wrap">
+    <p class="muted" style="text-transform:uppercase;letter-spacing:.15em;font-weight:700;color:#52715d">Compare texts</p>
+    <h1>Rhyme dictionaries</h1>
+    <p class="intro">Build a per-text dictionary of line-ending rhyme pairs, save it in this browser, and compare dictionaries to explore shared rhyme patterns. Pair suggestions are spelling-based heuristics—not verified pronunciations.</p>
+
+    <section class="card">
+      <h2>Create a dictionary from a text</h2>
+      <div class="grid"><div><label for="savedText">Load one of your saved Verse texts</label><select id="savedText"><option value="">Choose a saved text…</option></select><p class="muted">Saved poems are read from Verse’s local browser storage, if available.</p></div><div><label for="dictionaryName">Dictionary / text name</label><input id="dictionaryName" placeholder="Text title or manuscript name"></div></div>
+      <label for="poemText">Text (one verse line per row; blank lines mark stanzas)</label><textarea id="poemText" placeholder="Paste poem text here, or load a saved Verse text above."></textarea>
+      <div class="actions"><button id="build">Build rhyme dictionary</button><button id="loadFile" class="secondary">Upload .txt</button><input id="file" type="file" accept=".txt,text/plain" hidden></div>
+      <p class="muted">Pair detection compares line endings within each stanza (or four-line sections when there are no blank stanza breaks). Exact spelling-tail matches are included by default. Review/edit pairs after generation before relying on them for comparison.</p>
+      <p id="status" class="status" role="status"></p>
+    </section>
+
+    <section class="card">
+      <div class="grid" style="align-items:end"><div><h2 style="margin-bottom:4px">Saved dictionaries</h2><p class="muted" style="margin:0">Kept locally in this browser. Export JSON to back them up or move them.</p></div><div class="actions" style="margin:0"><button id="exportAll" class="secondary">Export all</button><button id="importAll" class="secondary">Import JSON</button><input id="importFile" type="file" accept="application/json,.json" hidden></div></div>
+      <div id="dictionaryList" class="empty">No saved dictionaries yet.</div>
+    </section>
+
+    <section class="card">
+      <h2>Compare two dictionaries</h2>
+      <div class="two-col"><div><label for="compareA">Text A</label><select id="compareA"></select></div><div><label for="compareB">Text B</label><select id="compareB"></select></div></div>
+      <div class="actions"><button id="compare">Compare rhyme pairs</button></div>
+      <div id="comparison" class="empty">Choose two saved dictionaries to see shared and distinct pairs.</div>
+    </section>
+  </main>
+<script>
+(() => {
+  const DICT_KEY = 'verse-rhyme-dictionaries-v1'
+  const SAVED_TEXT_KEY = 'verse-saved-texts'
+  const FEEDBACK_KEY = 'verse-rhyme-feedback'
+  const $ = (id) => document.getElementById(id)
+  const esc = (s) => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
+  const normalize = (s) => String(s || '').toLocaleLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[’'-]/g,'')
+  const finalWord = (s) => (String(s || '').trim().replace(/[^\p{L}\p{N}]+$/gu,'').match(/[\p{L}]+(?:[’'-][\p{L}]+)*$/u) || [''])[0]
+  const pairKey = (a,b) => [normalize(a),normalize(b)].sort().join('|')
+  const rhymeTail = (word) => {
+    let value = normalize(word).replace(/y$/,'i')
+    const accented = /[éèê]$/i.test(word)
+    if (!accented && value.length > 2 && value.endsWith('e') && !/[aeiouy]e$/.test(value) && /[aeiou]/.test(value.slice(0,-1))) value = value.slice(0,-1)
+    const match = value.match(/[aeiou]+[^aeiou]*$/i)
+    return (match ? match[0] : value).replace(/([aeiou])\1+$/g,'$1')
+  }
+  const readJson = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback } catch { return fallback } }
+  const getDictionaries = () => readJson(DICT_KEY, [])
+  const saveDictionaries = (items) => { localStorage.setItem(DICT_KEY, JSON.stringify(items)) }
+  const feedback = readJson(FEEDBACK_KEY, [])
+  const status = (message) => { $('status').textContent = message }
+
+  function refreshSavedTexts() {
+    const select = $('savedText'); const texts = readJson(SAVED_TEXT_KEY, [])
+    select.innerHTML = '<option value="">Choose a saved text…</option>'
+    if (Array.isArray(texts)) texts.forEach((item, index) => {
+      if (!item || typeof item.text !== 'string') return
+      const option = document.createElement('option'); option.value = String(index); option.textContent = item.title || 'Untitled poem'; select.appendChild(option)
+    })
+  }
+  $('savedText').addEventListener('change', (event) => {
+    const texts = readJson(SAVED_TEXT_KEY, []); const item = texts[Number(event.target.value)]
+    if (!item) return
+    $('poemText').value = item.text
+    $('dictionaryName').value = item.title || 'Untitled poem'
+    status(`Loaded “${item.title || 'Untitled poem'}”.`)
+  })
+  $('loadFile').addEventListener('click', () => $('file').click())
+  $('file').addEventListener('change', (event) => {
+    const file = event.target.files && event.target.files[0]; if (!file) return
+    const reader = new FileReader(); reader.onload = () => { $('poemText').value = String(reader.result || ''); if (!$('dictionaryName').value) $('dictionaryName').value = file.name.replace(/\.[^.]+$/,''); status('Text loaded. Build the dictionary when ready.') }
+    reader.readAsText(file); event.target.value = ''
+  })
+
+  function generatePairs(text) {
+    const rawLines = String(text).split(/\r?\n/); const stanzas = []; let stanza = []
+    rawLines.forEach((raw) => { if (!raw.trim()) { if (stanza.length) stanzas.push(stanza); stanza = []; return } stanza.push(raw.trim()) })
+    if (stanza.length) stanzas.push(stanza)
+    const sections = []
+    stanzas.forEach((block) => { if (block.length > 4) { for (let i=0;i<block.length;i+=4) sections.push(block.slice(i,i+4)) } else sections.push(block) })
+    const feedbackByPair = new Map(feedback.map(item => [pairKey(item.a,item.b), item.rhymes]))
+    const pairs = new Map()
+    sections.forEach((block, sectionIndex) => {
+      const endings = block.map((line,lineIndex) => ({ word: finalWord(line), line: lineIndex+1 })).filter(item => item.word)
+      for (let i=0;i<endings.length;i++) for (let j=i+1;j<endings.length;j++) {
+        const a=endings[i], b=endings[j], key=pairKey(a.word,b.word)
+        const judgment=feedbackByPair.get(key)
+        const ta=rhymeTail(a.word), tb=rhymeTail(b.word)
+        const exact=!!ta && ta===tb
+        if (judgment === false || (judgment === undefined && !exact)) continue
+        const probability = judgment === true ? 100 : 82
+        const reasons=[]
+        if (judgment === true) reasons.push('Manually accepted in Verse.')
+        if (exact) reasons.push(`Matching spelling tail: ${ta}.`)
+        if (/[éèê]$/i.test(a.word) || /[éèê]$/i.test(b.word)) reasons.push('Final accented vowel is treated as pronounced.')
+        if (a.word.toLowerCase().endsWith('e') !== b.word.toLowerCase().endsWith('e')) reasons.push('Assumes written final -e may be silent.')
+        const record = { a:a.word, b:b.word, probability, reasons, positions:[a.line,b.line], section:sectionIndex+1 }
+        if (!pairs.has(key)) pairs.set(key, record)
+        else if (record.probability > pairs.get(key).probability) pairs.set(key, record)
+      }
+    })
+    return [...pairs.values()].sort((a,b) => pairKey(a.a,a.b).localeCompare(pairKey(b.a,b.b)))
+  }
+
+  function build() {
+    const text=$('poemText').value.trim(); if (!text) { status('Paste or load a text first.'); return }
+    const title=$('dictionaryName').value.trim() || 'Untitled text'
+    const pairs=generatePairs(text)
+    if (!pairs.length) { status('No likely within-section rhyme pairs found. You can still save an empty dictionary for this text.'); }
+    const existing=getDictionaries().find(item => item.title.toLocaleLowerCase()===title.toLocaleLowerCase())
+    const dictionary={id:existing?.id || `${Date.now()}-${Math.random().toString(36).slice(2,8)}`,title,text,pairs,updatedAt:Date.now()}
+    const next=[dictionary,...getDictionaries().filter(item=>item.id!==dictionary.id)]
+    try { saveDictionaries(next); render(); status(`Saved “${title}” with ${pairs.length} unique rhyme pair${pairs.length===1?'':'s'}.`) }
+    catch { status('Could not save: browser storage may be full. Export or remove dictionaries and try again.') }
+  }
+  $('build').addEventListener('click',build)
+
+  function download(name, content, type) {
+    const url=URL.createObjectURL(new Blob([content],{type})); const a=document.createElement('a'); a.href=url; a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000)
+  }
+  function downloadOne(item) { download(`${item.title.replace(/[^\p{L}\p{N}-]+/gu,'-').toLowerCase() || 'rhyme-dictionary'}.json`,JSON.stringify(item,null,2),'application/json') }
+  function removeOne(id) { saveDictionaries(getDictionaries().filter(item=>item.id!==id)); render() }
+  function render() {
+    const items=getDictionaries(); const target=$('dictionaryList')
+    $('compareA').innerHTML=''; $('compareB').innerHTML=''
+    items.forEach(item=>{ for(const id of ['compareA','compareB']) { const option=document.createElement('option'); option.value=item.id; option.textContent=item.title; $(id).appendChild(option) } })
+    if (!items.length) { target.className='empty'; target.textContent='No saved dictionaries yet.'; return }
+    target.className='table-wrap'; target.innerHTML=`<table><thead><tr><th>Text</th><th>Pairs</th><th>Updated</th><th>Actions</th></tr></thead><tbody>${items.map(item=>`<tr><td>${esc(item.title)}</td><td>${item.pairs.length}</td><td>${new Date(item.updatedAt).toLocaleDateString()}</td><td><button class="secondary" data-export="${esc(item.id)}">Export</button> <button class="danger" data-delete="${esc(item.id)}">Delete</button></td></tr>`).join('')}</tbody></table>`
+    target.querySelectorAll('[data-export]').forEach(button=>button.addEventListener('click',()=>downloadOne(items.find(item=>item.id===button.dataset.export))))
+    target.querySelectorAll('[data-delete]').forEach(button=>button.addEventListener('click',()=>removeOne(button.dataset.delete)))
+  }
+  $('exportAll').addEventListener('click',()=>download('verse-rhyme-dictionaries.json',JSON.stringify(getDictionaries(),null,2),'application/json'))
+  $('importAll').addEventListener('click',()=>$('importFile').click())
+  $('importFile').addEventListener('change',(event)=>{
+    const file=event.target.files&&event.target.files[0];if(!file)return
+    const reader=new FileReader();reader.onload=()=>{try{const data=JSON.parse(String(reader.result));const incoming=Array.isArray(data)?data:[data];if(incoming.some(item=>!item||typeof item.title!=='string'||!Array.isArray(item.pairs)))throw new Error('Invalid');const existing=getDictionaries();const merged=[...existing];incoming.forEach(item=>{const index=merged.findIndex(x=>x.id===item.id||x.title.toLowerCase()===item.title.toLowerCase());if(index>=0)merged[index]=item;else merged.push(item)});saveDictionaries(merged);render();status(`Imported ${incoming.length} dictionary/dictionaries.`)}catch{status('That file is not a Verse rhyme dictionary export.')}event.target.value=''};reader.readAsText(file)
+  })
+
+  function compare() {
+    const all=getDictionaries(); const a=all.find(item=>item.id===$('compareA').value); const b=all.find(item=>item.id===$('compareB').value); const out=$('comparison')
+    if(!a||!b){out.className='empty';out.textContent='Save at least two dictionaries to compare them.';return}
+    const mapA=new Map(a.pairs.map(pair=>[pairKey(pair.a,pair.b),pair]));const mapB=new Map(b.pairs.map(pair=>[pairKey(pair.a,pair.b),pair]))
+    const shared=[...mapA.keys()].filter(key=>mapB.has(key));const onlyA=[...mapA.keys()].filter(key=>!mapB.has(key));const onlyB=[...mapB.keys()].filter(key=>!mapA.has(key));const union=new Set([...mapA.keys(),...mapB.keys()]).size;const similarity=union?Math.round(shared.length/union*100):0
+    const rows=(keys,map)=>keys.map(key=>{const p=map.get(key);return `<tr><td>${esc(p.a)}</td><td>${esc(p.b)}</td><td>${p.probability}%</td></tr>`}).join('')||'<tr><td colspan="3" class="muted">None</td></tr>'
+    out.className='';out.innerHTML=`<p><span class="pill">${similarity}% shared pair overlap</span> <span class="muted">Jaccard similarity: shared unique pairs ÷ all unique pairs across both texts. Pair spellings are normalized for case/diacritics.</span></p><div class="two-col"><div><h3>Shared pairs (${shared.length})</h3><div class="table-wrap"><table><thead><tr><th>Word 1</th><th>Word 2</th><th>Confidence</th></tr></thead><tbody>${rows(shared,mapA)}</tbody></table></div></div><div><h3>Only in ${esc(a.title)} (${onlyA.length})</h3><div class="table-wrap"><table><thead><tr><th>Word 1</th><th>Word 2</th><th>Confidence</th></tr></thead><tbody>${rows(onlyA,mapA)}</tbody></table></div><h3 style="margin-top:20px">Only in ${esc(b.title)} (${onlyB.length})</h3><div class="table-wrap"><table><thead><tr><th>Word 1</th><th>Word 2</th><th>Confidence</th></tr></thead><tbody>${rows(onlyB,mapB)}</tbody></table></div></div></div><div class="actions"><button class="secondary" id="exportComparison">Export comparison CSV</button></div>`
+    $('exportComparison').addEventListener('click',()=>{const csv=[['group','word_a','word_b','confidence'],...shared.map(k=>['shared',mapA.get(k).a,mapA.get(k).b,mapA.get(k).probability]),...onlyA.map(k=>[a.title,mapA.get(k).a,mapA.get(k).b,mapA.get(k).probability]),...onlyB.map(k=>[b.title,mapB.get(k).a,mapB.get(k).b,mapB.get(k).probability])].map(row=>row.map(value=>`"${String(value).replace(/"/g,'""')}"`).join(',')).join('\n');download('rhyme-dictionary-comparison.csv',csv,'text/csv')})
+  }
+  $('compare').addEventListener('click',compare)
+  refreshSavedTexts();render()
+})()
+</script>
+</body>
+</html>
